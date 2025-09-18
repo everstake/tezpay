@@ -17,7 +17,6 @@ FROM alpine:3.10
 RUN apk update && apk add ca-certificates
 
 COPY --from=builder /app/tezpay /app/tezpay
-COPY --from=builder /app/config/config.hjson /app/config.hjson
 
 WORKDIR /app
 
