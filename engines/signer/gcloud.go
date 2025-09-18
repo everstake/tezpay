@@ -12,7 +12,6 @@ import (
 	"github.com/trilitech/tzgo/codec"
 	"github.com/trilitech/tzgo/signer"
 	"github.com/trilitech/tzgo/tezos"
-	"google.golang.org/api/option"
 )
 
 type GCSigner struct {
@@ -23,7 +22,7 @@ type GCSigner struct {
 }
 
 func InitGCSigner(ctx context.Context, kmsKeySource string) (s *GCSigner, err error) {
-	client, err := kms.NewKeyManagementClient(ctx, option.WithCredentialsFile("/home/vm/everstake/projects/claimer/gc-key-local.json"))
+	client, err := kms.NewKeyManagementClient(ctx)
 	if err != nil {
 		return s, err
 	}
@@ -72,7 +71,7 @@ func (s *GCSigner) GetKey() tezos.Key {
 }
 
 func (s *GCSigner) Sign(op *codec.Op) error {
-	client, err := kms.NewKeyManagementClient(s.ctx, option.WithCredentialsFile("/home/vm/everstake/projects/claimer/gc-key-local.json"))
+	client, err := kms.NewKeyManagementClient(s.ctx)
 	if err != nil {
 		return err
 	}
