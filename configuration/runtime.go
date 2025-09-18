@@ -84,6 +84,7 @@ type RuntimeConfiguration struct {
 	Extensions                 []tezpay_configuration.ExtensionConfigurationV0
 	SourceBytes                []byte `json:"-"`
 	DisableAnalytics           bool   `json:"disable_analytics,omitempty"`
+	GCPSigner                  string
 }
 
 func GetDefaultRuntimeConfiguration() RuntimeConfiguration {
