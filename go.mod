@@ -19,6 +19,7 @@ require (
 	github.com/hjson/hjson-go/v4 v4.5.0
 	github.com/jedib0t/go-pretty/v6 v6.6.8
 	github.com/nikoksr/notify v1.3.0
+	github.com/pkg/errors v0.9.1
 	github.com/samber/lo v1.51.0
 	github.com/spf13/cobra v1.10.1
 	github.com/stretchr/testify v1.10.0

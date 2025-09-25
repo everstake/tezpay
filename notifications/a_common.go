@@ -21,13 +21,14 @@ const (
 type NotificatorKind string
 
 const (
-	TELEGRAM_NOTIFICATOR NotificatorKind = "telegram"
-	TWITTER_NOTIFICATOR  NotificatorKind = "twitter"
-	DISCORD_NOTIFICATOR  NotificatorKind = "discord"
-	EMAIL_NOTIFICATOR    NotificatorKind = "email"
-	EXTERNAL_NOTIFICATOR NotificatorKind = "external"
-	WEBHOOK_NOTIFICATOR  NotificatorKind = "webhook"
-	BLUESKY_NOTIFICATOR  NotificatorKind = "bluesky"
+	TELEGRAM_NOTIFICATOR  NotificatorKind = "telegram"
+	TWITTER_NOTIFICATOR   NotificatorKind = "twitter"
+	DISCORD_NOTIFICATOR   NotificatorKind = "discord"
+	EMAIL_NOTIFICATOR     NotificatorKind = "email"
+	EXTERNAL_NOTIFICATOR  NotificatorKind = "external"
+	WEBHOOK_NOTIFICATOR   NotificatorKind = "webhook"
+	BLUESKY_NOTIFICATOR   NotificatorKind = "bluesky"
+	SLACK_BOT_NOTIFICATOR NotificatorKind = "slack_bot"
 )
 
 func PopulateMessageTemplate(messageTempalte string, summary *common.CyclePayoutSummary, additionalData map[string]string) string {
