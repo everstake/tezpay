@@ -24,6 +24,8 @@ func LoadNotificatior(kind NotificatorKind, configuration []byte) (common.Notifi
 		return InitWebhookNotificator(configuration)
 	case BLUESKY_NOTIFICATOR:
 		return InitBlueskyNotificator(configuration)
+	case SLACK_BOT_NOTIFICATOR:
+		return InitSlackBotNotificator(configuration)
 	default:
 		return nil, errors.Join(constants.ErrUnsupportedNotificator, fmt.Errorf("kind: %s", kind))
 	}
@@ -45,6 +47,8 @@ func ValidateNotificatorConfiguration(kind NotificatorKind, configuration []byte
 		return ValidateExternalConfiguration(configuration)
 	case BLUESKY_NOTIFICATOR:
 		return ValidateBlueskyConfiguration(configuration)
+	case SLACK_BOT_NOTIFICATOR:
+		return ValidateSlackBotConfiguration(configuration)
 	default:
 		return errors.Join(constants.ErrUnsupportedNotificator, fmt.Errorf("kind: %s", kind))
 	}
