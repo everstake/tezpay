@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/pkg/errors"
 	"github.com/tez-capital/tezpay/common"
@@ -17,6 +18,7 @@ type (
 	SlackBotNotificator struct {
 		token   string
 		channel string
+		network string
 	}
 	slackMessage struct {
 		Channel  string `json:"channel"`
@@ -24,6 +26,7 @@ type (
 		ThreadTS string `json:"thread_ts,omitempty"`
 	}
 	slackBotNotificatorConfiguration struct {
+		Network string `json:"network"`
 		Channel string `json:"channel"`
 		Token   string `json:"token"`
 	}
@@ -41,6 +44,7 @@ func InitSlackBotNotificator(configurationBytes []byte) (*SlackBotNotificator, e
 	return &SlackBotNotificator{
 		token:   configuration.Token,
 		channel: configuration.Channel,
+		network: configuration.Network,
 	}, nil
 }
 
@@ -103,7 +107,7 @@ func (s SlackBotNotificator) send(message, threadTS string) (treadID string, err
 }
 
 func (s SlackBotNotificator) PayoutSummaryNotify(summary *common.CyclePayoutSummary, additionalData map[string]string) error {
-	threadMessage := fmt.Sprintf(":white_check_mark: TEZOS mainnet - cycle %d", summary.Cycle)
+	threadMessage := fmt.Sprintf(":white_check_mark: TEZOS %s - cycle %d", s.network, summary.Cycle)
 	subMessage := fmt.Sprintf(
 		"Delegators: %d\nPaid Delegators: %d\nOwn Staked Balance: %s XTZ\nOwn Delegated Balance: %s XTZ\nExternal Staked Balance: %s XTZ\nExternal Delegated Balance: %s XTZ\nCycle Fees: %s XTZ\nCycle Rewards: %s XTZ\nDistributed Rewards: %s XTZ\nTransaction Fees Paid: %s XTZ\nBond Income: %s XTZ\nFee Income: %s XTZ\nTotal Income: %s XTZ\nDonated Bonds: %s XTZ\nDonated Fees: %s XTZ\nDonated Total: %s XTZ\nTimestamp: %s\n",
 		summary.Delegators, summary.PaidDelegators,
@@ -121,7 +125,7 @@ func (s SlackBotNotificator) PayoutSummaryNotify(summary *common.CyclePayoutSumm
 		parseAndScale(summary.DonatedBonds.String()),
 		parseAndScale(summary.DonatedFees.String()),
 		parseAndScale(summary.DonatedTotal.String()),
-		summary.Timestamp,
+		summary.Timestamp.Format(time.DateTime),
 	)
 	threadTS, err := s.send(threadMessage, "")
 	if err != nil {
