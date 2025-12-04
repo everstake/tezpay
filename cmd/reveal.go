@@ -22,7 +22,6 @@ import (
 	"github.com/trilitech/tzgo/codec"
 	"github.com/trilitech/tzgo/rpc"
 	"github.com/trilitech/tzgo/tezos"
-	"google.golang.org/api/option"
 )
 
 var revealCmd = &cobra.Command{
@@ -43,7 +42,7 @@ var revealCmd = &cobra.Command{
 }
 
 func reveal(ctx context.Context, rpcURL, kmsSource string) error {
-	client, err := kms.NewKeyManagementClient(ctx, option.WithCredentialsFile("/home/vm/everstake/projects/claimer/gc-key-local.json"))
+	client, err := kms.NewKeyManagementClient(ctx)
 	if err != nil {
 		return errors.Wrap(err, "creating kms client")
 	}
