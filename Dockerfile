@@ -7,10 +7,10 @@ COPY . .
 RUN apk update \
     && apk add --no-cache git \
     && apk add --no-cache ca-certificates \
-    && apk add --update gcc musl-dev \
+    && apk add --update gcc musl-dev build-base \
     && update-ca-certificates
 
-RUN GOOS=linux go build -o tezpay -a -v .
+RUN CGO_CFLAGS="-std=gnu11 -D_GNU_SOURCE" GOOS=linux go build -o tezpay -a -v .
 
 FROM alpine:3.10
 
