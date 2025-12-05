@@ -85,6 +85,7 @@ func reveal(ctx context.Context, rpcURL, kmsSource string) error {
 
 	op := codec.NewOp().WithSource(address).WithContents(&CustomReveal{
 		Manager: codec.Manager{
+			Fee:      300,
 			GasLimit: 180,
 			Source:   address,
 		},
