@@ -106,8 +106,8 @@ func (s SlackBotNotificator) send(message, threadTS string) (treadID string, err
 	return "", nil
 }
 
-func (s SlackBotNotificator) PayoutSummaryNotify(summary *common.CyclePayoutSummary, additionalData map[string]string) error {
-	threadMessage := fmt.Sprintf(":white_check_mark: TEZOS %s - cycle %d", s.network, summary.Cycle)
+func (s SlackBotNotificator) PayoutSummaryNotify(summary *common.PayoutSummary, additionalData map[string]string) error {
+	threadMessage := fmt.Sprintf(":white_check_mark: TEZOS %s - cycle(s) %v", s.network, summary.Cycles)
 	subMessage := fmt.Sprintf(
 		"Delegators: %d\nPaid Delegators: %d\nOwn Staked Balance: %s XTZ\nOwn Delegated Balance: %s XTZ\nExternal Staked Balance: %s XTZ\nExternal Delegated Balance: %s XTZ\nCycle Fees: %s XTZ\nCycle Rewards: %s XTZ\nDistributed Rewards: %s XTZ\nTransaction Fees Paid: %s XTZ\nBond Income: %s XTZ\nFee Income: %s XTZ\nTotal Income: %s XTZ\nDonated Bonds: %s XTZ\nDonated Fees: %s XTZ\nDonated Total: %s XTZ\nTimestamp: %s\n",
 		summary.Delegators, summary.PaidDelegators,
@@ -115,10 +115,10 @@ func (s SlackBotNotificator) PayoutSummaryNotify(summary *common.CyclePayoutSumm
 		parseAndScale(summary.OwnDelegatedBalance.String()),
 		parseAndScale(summary.ExternalStakedBalance.String()),
 		parseAndScale(summary.ExternalDelegatedBalance.String()),
-		parseAndScale(summary.EarnedFees.String()),
+		parseAndScale(summary.EarnedBlockFees.String()),
 		parseAndScale(summary.EarnedRewards.String()),
 		parseAndScale(summary.DistributedRewards.String()),
-		parseAndScale(summary.TransactionFeesPaid.String()),
+		parseAndScale(summary.TxFeesPaid.String()),
 		parseAndScale(summary.BondIncome.String()),
 		parseAndScale(summary.FeeIncome.String()),
 		parseAndScale(summary.IncomeTotal.String()),
