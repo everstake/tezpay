@@ -7,6 +7,7 @@ const (
 	WALLET_MODE_LOCAL_PRIVATE_KEY2 EWalletMode = "local_private_key"
 	WALLET_MODE_REMOTE_SIGNER      EWalletMode = "remote-signer"
 	WALLET_MODE_REMOTE_SIGNER2     EWalletMode = "remote_signer"
+	WALLET_MODE_GCP_KMS            EWalletMode = "gcp-kms"
 )
 
 var (
@@ -15,6 +16,7 @@ var (
 		WALLET_MODE_LOCAL_PRIVATE_KEY2,
 		WALLET_MODE_REMOTE_SIGNER,
 		WALLET_MODE_REMOTE_SIGNER2,
+		WALLET_MODE_GCP_KMS,
 	}
 )
 
@@ -59,8 +61,6 @@ const (
 	PAYOUT_KIND_BAKER_REWARD     EPayoutKind = "baker reward"
 	PAYOUT_KIND_DONATION         EPayoutKind = "donation"
 	PAYOUT_KIND_FEE_INCOME       EPayoutKind = "fee income"
-	PAYOUT_KIND_ACCUMULATED      EPayoutKind = "accumulated"
-	PAYOUT_KIND_INVALID          EPayoutKind = "invalid"
 )
 
 func (kind EPayoutKind) ToPriority() int {
@@ -74,10 +74,6 @@ func (kind EPayoutKind) ToPriority() int {
 		return 8
 	case PAYOUT_KIND_FEE_INCOME:
 		return 7
-	case PAYOUT_KIND_ACCUMULATED:
-		return 6
-	case PAYOUT_KIND_INVALID:
-		return 5
 	default:
 		return 0
 	}
