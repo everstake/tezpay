@@ -510,6 +510,7 @@ func (summary *PayoutSummary) AddCycleSummary(cycle int64, another *CyclePayoutS
 	slices.Sort(summary.Cycles)
 	summary.CycleSummaries[cycle] = *another
 
+	summary.Timestamp = another.Timestamp
 	summary.OwnStakedBalance = summary.OwnStakedBalance.Add(another.OwnStakedBalance)
 	summary.OwnDelegatedBalance = summary.OwnDelegatedBalance.Add(another.OwnDelegatedBalance)
 	summary.ExternalStakedBalance = summary.ExternalStakedBalance.Add(another.ExternalStakedBalance)
