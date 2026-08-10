@@ -12,7 +12,7 @@ RUN apk update \
 
 RUN CGO_CFLAGS="-std=gnu11 -D_GNU_SOURCE" GOOS=linux go build -o tezpay -a -v .
 
-FROM alpine:3.10
+FROM alpine:3.24.1
 
 RUN apk update && apk add ca-certificates
 
