@@ -17,6 +17,7 @@ import (
 	"github.com/tez-capital/tezpay/extension"
 	"github.com/tez-capital/tezpay/state"
 	"github.com/tez-capital/tezpay/utils"
+	"github.com/trilitech/tzgo/tezos"
 )
 
 var (
@@ -26,11 +27,55 @@ var (
 	endCycle              int64
 )
 
-func processCycleInContinualMode(context *configurationAndEngines, forceConfirmationPrompt bool, mixInContractCalls bool, mixInFATransfers bool, isDryRun bool, silent bool) (processed bool) {
+type protocolChangeDecision struct {
+	HasProtocolChanged              bool
+	ShouldNotify                    bool
+	ShouldSkipPayouts               bool
+	NotificationMessage             string
+	UpdatedExpectedProtocol         tezos.ProtocolHash
+	UpdatedLastNotifiedProtocolPair string
+}
+
+func evaluateProtocolChange(expectedProtocol, currentProtocol tezos.ProtocolHash, lastNotifiedProtocolPair string, ignoreProtocolChanges bool) protocolChangeDecision {
+	decision := protocolChangeDecision{
+		HasProtocolChanged:              currentProtocol != expectedProtocol,
+		UpdatedExpectedProtocol:         expectedProtocol,
+		UpdatedLastNotifiedProtocolPair: lastNotifiedProtocolPair,
+	}
+
+	if !decision.HasProtocolChanged {
+		return decision
+	}
+
+	notificationKey := fmt.Sprintf("%s->%s", expectedProtocol, currentProtocol)
+	if notificationKey != lastNotifiedProtocolPair {
+		decision.ShouldNotify = true
+		decision.NotificationMessage = fmt.Sprintf("Protocol changed from %s to %s.", expectedProtocol, currentProtocol)
+		decision.UpdatedLastNotifiedProtocolPair = notificationKey
+	}
+
+	if ignoreProtocolChanges {
+		decision.UpdatedExpectedProtocol = currentProtocol
+	} else {
+		decision.ShouldSkipPayouts = true
+	}
+
+	return decision
+}
+
+func processCycleInContinualMode(context *configurationAndEngines, forceConfirmationPrompt bool, mixInContractCalls bool, mixInFATransfers bool, isDryRun bool, silent bool, payoutInterval, intervalTriggerOffset, includePrevious int64) (processed bool) {
 	processed = true
 	retry := func() bool {
 		processed = false
 		return false
+	}
+
+	cycleToProcess = lastProcessedCycle + 1
+	cycles, isEndOfThePeriod := getCyclesInCompletedPeriod(cycleToProcess, payoutInterval, intervalTriggerOffset, includePrevious)
+	if !isEndOfThePeriod {
+		slog.Info("cycle is not at the end of the specified payout interval, skipping", "cycle", cycleToProcess, "payout_interval", payoutInterval, "interval_trigger_offset", intervalTriggerOffset, "include_previous", includePrevious)
+		lastProcessedCycle = cycleToProcess
+		return
 	}
 
 	defer func() { // complete cycle
@@ -61,8 +106,8 @@ func processCycleInContinualMode(context *configurationAndEngines, forceConfirma
 		return retry()
 	}
 
-	slog.Info("acquiring lock", "cycle", cycleToProcess, "phase", "acquiring_lock")
-	unlock, err := lockCyclesWithTimeout(time.Minute*10, cycleToProcess)
+	slog.Info("acquiring lock", "cycles", cycles, "phase", "acquiring_lock")
+	unlock, err := lockCyclesWithTimeout(time.Minute*10, cycles...)
 	if err != nil {
 		slog.Error("failed to acquire lock", "error", err.Error())
 		return retry()
@@ -70,13 +115,9 @@ func processCycleInContinualMode(context *configurationAndEngines, forceConfirma
 	defer unlock()
 
 	slog.Info("===================== PROCESSING START =====================")
-	slog.Info("processing cycle", "cycle", cycleToProcess)
+	slog.Info("processing cycles", "cycles", cycles)
 
-	generationResult, err := core.GeneratePayouts(config, common.NewGeneratePayoutsEngines(collector, signer, notifyAdminFactory(config)),
-		&common.GeneratePayoutsOptions{
-			Cycle:                    cycleToProcess,
-			WaitForSufficientBalance: true,
-		})
+	generationResult, err := generatePayoutsForCycles(cycles, config, collector, signer, &common.GeneratePayoutsOptions{})
 	if err != nil {
 		if errors.Is(err, constants.ErrNoCycleDataAvailable) {
 			slog.Info("no data available for cycle, skipping", "cycle", cycleToProcess)
@@ -88,7 +129,10 @@ func processCycleInContinualMode(context *configurationAndEngines, forceConfirma
 
 	slog.Info("checking reports of past payouts")
 	preparationResult := assertRunWithResult(func() (*common.PreparePayoutsResult, error) {
-		return core.PrepareCyclePayouts(generationResult, config, common.NewPreparePayoutsEngineContext(collector, signer, fsReporter, notifyAdminFactory(config)), &common.PreparePayoutsOptions{})
+		return core.PreparePayouts(generationResult, config, common.NewPreparePayoutsEngineContext(collector, signer, fsReporter, notifyAdminFactory(config)), &common.PreparePayoutsOptions{
+			WaitForSufficientBalance: true,
+			Accumulate:               true,
+		})
 	}, EXIT_OPERTION_FAILED)
 
 	if len(preparationResult.ValidPayouts) == 0 {
@@ -96,18 +140,18 @@ func processCycleInContinualMode(context *configurationAndEngines, forceConfirma
 		return
 	}
 
-	slog.Info("processing payouts", "valid", len(preparationResult.ValidPayouts), "invalid", len(preparationResult.InvalidPayouts), "accumulated", len(preparationResult.AccumulatedPayouts), "already_successful", len(preparationResult.ReportsOfPastSuccessfulPayouts))
+	slog.Info("processing payouts", "valid", len(preparationResult.ValidPayouts), "invalid", len(preparationResult.InvalidPayouts), "accumulated", len(preparationResult.ValidPayouts), "already_successful", len(preparationResult.ReportsOfPastSuccessfulPayouts))
 
 	if forceConfirmationPrompt && utils.IsTty() {
-		PrintPreparationResults(preparationResult, generationResult.Cycle)
+		utils.PrintPreparePayoutsResult(preparationResult, &utils.PrintPreparePayoutsResultOptions{AutoMergeRecords: true})
 		msg := "Do you want to pay out above VALID payouts?"
 		if isDryRun {
-			msg = msg + " (dry-run)"
+			msg = msg + " " + constants.DRY_RUN_NOTE
 		}
 		assertRequireConfirmation(msg)
 	}
 
-	slog.Info("executing payouts", "valid", len(preparationResult.ValidPayouts), "invalid", len(preparationResult.InvalidPayouts), "accumulated", len(preparationResult.AccumulatedPayouts), "already_successful", len(preparationResult.ReportsOfPastSuccessfulPayouts))
+	slog.Info("executing payouts", "valid", len(preparationResult.ValidPayouts), "invalid", len(preparationResult.InvalidPayouts), "accumulated", len(preparationResult.ValidPayouts), "already_successful", len(preparationResult.ReportsOfPastSuccessfulPayouts))
 	executionResult := assertRunWithResult(func() (*common.ExecutePayoutsResult, error) {
 		return core.ExecutePayouts(preparationResult, config, common.NewExecutePayoutsEngineContext(signer, transactor, fsReporter, notifyAdminFactory(config)), &common.ExecutePayoutsOptions{
 			MixInContractCalls: mixInContractCalls,
@@ -117,7 +161,7 @@ func processCycleInContinualMode(context *configurationAndEngines, forceConfirma
 	}, EXIT_OPERTION_FAILED)
 
 	// notify
-	failedCount := lo.CountBy(executionResult.BatchResults, func(br common.BatchResult) bool { return !br.IsSuccess })
+	failedCount := lo.CountBy(executionResult.BatchResults, func(br *common.BatchResult) bool { return !br.IsSuccess })
 	if len(executionResult.BatchResults) > 0 {
 		if failedCount > 0 {
 			slog.Error("failed operations detected", "failed", failedCount, "total", len(executionResult.BatchResults), "cycle", cycleToProcess, "phase", "cycle_processing_failed")
@@ -128,7 +172,7 @@ func processCycleInContinualMode(context *configurationAndEngines, forceConfirma
 		}
 	}
 	if !silent && !isDryRun {
-		notifyPayoutsProcessedThroughAllNotificators(config, &generationResult.Summary)
+		notifyPayoutsProcessedThroughAllNotificators(config, &executionResult.Summary)
 	}
 	PrintPayoutWalletRemainingBalance(collector, signer)
 	return
@@ -149,6 +193,13 @@ var continualCmd = &cobra.Command{
 		forceConfirmationPrompt, _ := cmd.Flags().GetBool(FORCE_CONFIRMATION_PROMPT_FLAG)
 		isDryRun, _ := cmd.Flags().GetBool(DRY_RUN_FLAG)
 		silent, _ := cmd.Flags().GetBool(SILENT_FLAG)
+
+		payoutInterval, _ := cmd.Flags().GetInt64(PAYMENT_INTERVAL_CYCLES_FLAG)
+		payoutInterval = getBoundedPayoutInterval(payoutInterval)
+		intervalTriggerOffset, _ := cmd.Flags().GetInt64(INTERVAL_TRIGGER_OFFSET_FLAG)
+		intervalTriggerOffset = boundToInterval(intervalTriggerOffset, payoutInterval, "interval-trigger-offset")
+		includePrevious, _ := cmd.Flags().GetInt64(INCLUDE_PREVIOUS_CYCLES_FLAG)
+		includePrevious = boundToInterval(includePrevious, payoutInterval*2, "include-previous-cycles")
 
 		if isDryRun {
 			slog.Info("Dry run mode enabled")
@@ -190,15 +241,18 @@ var continualCmd = &cobra.Command{
 		}
 
 		notifiedNewVersionAvailable := false
+		lastNotifiedProtocolPair := ""
 
-		startupProtocol := GetProtocolWithRetry(collector)
+		expectedProtocol := GetProtocolWithRetry(collector)
+		slog.Info("Continual mode started", "interval", payoutInterval, "interval_trigger_offset", intervalTriggerOffset, "include_previous_cycles", includePrevious, "protocol", expectedProtocol)
 		if !config.Network.IgnoreProtocolChanges {
-			slog.Info("Continual mode started in safe mode. In the event of a protocol change, TezPay will stop processing payouts and you will be notified.")
+			slog.Info("Continual mode started in SAFE mode. In the event of a protocol change, TezPay will stop processing payouts and you will be notified.")
 		}
+
 		defer func() {
 			notifyAdmin(config, fmt.Sprintf("Continual payouts stopped on cycle #%d", lastProcessedCycle+1))
 		}()
-		notifyAdmin(config, fmt.Sprintf("Continual payouts started on cycle #%d (tezpay %s, protocol %s)", lastProcessedCycle+1, constants.VERSION, startupProtocol))
+		notifyAdmin(config, fmt.Sprintf("Continual payouts started on cycle #%d (tezpay %s, protocol %s)", lastProcessedCycle+1, constants.VERSION, expectedProtocol))
 		for {
 			if lastProcessedCycle >= onchainCompletedCycle {
 				slog.Info("waiting for next cycle to complete", "phase", "waiting_for_next_cycle")
@@ -216,18 +270,21 @@ var continualCmd = &cobra.Command{
 				}
 			}
 
-			if !config.Network.IgnoreProtocolChanges {
-				slog.Debug("checking for protocol changes")
-				currentProtocol := GetProtocolWithRetry(collector)
-				if currentProtocol != startupProtocol {
-					/// we can not exit here. Users may configure recover mechanism in case of crashes/exits so we really want to wait for the operator to take action
-					slog.Warn("protocol changed, operator action required", "old_protocol", startupProtocol, "new_protocol", currentProtocol, "phase", "waiting_for_operator_action")
-					notifyAdmin(config, fmt.Sprintf("Protocol changed from %s to %s, waiting for the operator to take action.", startupProtocol, currentProtocol))
+			slog.Debug("checking for protocol changes")
+			currentProtocol := GetProtocolWithRetry(collector)
+			decision := evaluateProtocolChange(expectedProtocol, currentProtocol, lastNotifiedProtocolPair, config.Network.IgnoreProtocolChanges)
+			if decision.HasProtocolChanged {
+				slog.Warn("protocol changed", "old_protocol", expectedProtocol, "new_protocol", currentProtocol, "ignore_protocol_changes", config.Network.IgnoreProtocolChanges, "phase", "protocol_change_detected")
+				if decision.ShouldNotify {
+					notifyAdmin(config, decision.NotificationMessage)
+					lastNotifiedProtocolPair = decision.UpdatedLastNotifiedProtocolPair
+				}
+				if decision.ShouldSkipPayouts {
+					slog.Warn("protocol changed, operator action required; skipping payouts until restart", "old_protocol", expectedProtocol, "new_protocol", currentProtocol, "phase", "waiting_for_operator_action")
 					continue
 				}
+				expectedProtocol = decision.UpdatedExpectedProtocol
 			}
-
-			cycleToProcess = lastProcessedCycle + 1
 
 			if !notifiedNewVersionAvailable {
 				if available, latest := checkForNewVersionAvailable(); available {
@@ -236,7 +293,7 @@ var continualCmd = &cobra.Command{
 				}
 			}
 
-			processCycleInContinualMode(configurationContext, forceConfirmationPrompt, mixInContractCalls, mixInFATransfers, isDryRun, silent)
+			processCycleInContinualMode(configurationContext, forceConfirmationPrompt, mixInContractCalls, mixInFATransfers, isDryRun, silent, payoutInterval, intervalTriggerOffset, includePrevious)
 		}
 	},
 }
@@ -244,6 +301,9 @@ var continualCmd = &cobra.Command{
 func init() {
 	continualCmd.Flags().Int64P(CYCLE_FLAG, "c", 0, "initial cycle")
 	continualCmd.Flags().Int64P(END_CYCLE_FLAG, "e", 0, "end cycle")
+	continualCmd.Flags().Int64(PAYMENT_INTERVAL_CYCLES_FLAG, 1, "Specifies the payout frequency in cycles. For example, '1' (default) attempts a payout every cycle. '10' attempts a payout every 10th cycle. See --interval-trigger-offset to adjust the start.")
+	continualCmd.Flags().Int64(INTERVAL_TRIGGER_OFFSET_FLAG, 0, "An offset (in cycles) to adjust *when* the payout interval triggers. Example: With an interval of '10', an offset of '0' (default) triggers on cycles 10, 20, 30. An offset of '3' triggers on cycles 13, 23, 33.")
+	continualCmd.Flags().Int64(INCLUDE_PREVIOUS_CYCLES_FLAG, 0, "Number of previous cycles to scan for missed payouts. A value of '0' (default) only processes the cycles in current interval. A value of '5' would re-check the last 5 cycles in addition to the current interval.")
 	continualCmd.Flags().Bool(DISABLE_SEPARATE_SC_PAYOUTS_FLAG, false, "disables smart contract separation (mixes txs and smart contract calls within batches)")
 	continualCmd.Flags().Bool(DISABLE_SEPARATE_FA_PAYOUTS_FLAG, false, "disables fa transfers separation (mixes txs and fa transfers within batches)")
 	continualCmd.Flags().BoolP(FORCE_CONFIRMATION_PROMPT_FLAG, "a", false, "ask for confirmation on each payout")

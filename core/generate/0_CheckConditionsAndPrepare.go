@@ -3,39 +3,107 @@ package generate
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"time"
 
+	"github.com/hashicorp/go-version"
 	"github.com/tez-capital/tezpay/common"
 	"github.com/tez-capital/tezpay/constants"
-	"github.com/tez-capital/tezpay/utils"
 )
 
-func estimateBatchSerializationGasLimit(ctx *PayoutGenerationContext) error {
-	op, err := buildOpForEstimation(ctx, []common.TransferArgs{}, true)
+const KILL_SWITCH_DETECTED_MESSAGE = "kill switch detected, please check TzC support channels for more information"
+
+var (
+	killSwitchDoNotPayURL        = "https://raw.githubusercontent.com/tez-capital/tezpay/refs/heads/main/DO_NOT_PAY"
+	killSwitchUpgradeRequiredURL = "https://raw.githubusercontent.com/tez-capital/tezpay/refs/heads/main/UPGRADE_REQUIRED"
+)
+
+func checkKillSwitch(ctx *PayoutGenerationContext, options *common.GeneratePayoutsOptions) (*PayoutGenerationContext, error) {
+	configuration := ctx.GetConfiguration()
+
+	if os.Getenv("DISABLE_TEZPAY_KILL_SWITCH") == "true" {
+		return ctx, nil
+	}
+
+	if configuration.DisableKillSwitch {
+		return ctx, nil
+	}
+
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	// there are 2 types of kill switches
+	// - both hosted at https://raw.githubusercontent.com/tez-capital/tezpay/refs/heads/main/
+
+	// 1. DO_NOT_PAY
+	// - https://raw.githubusercontent.com/tez-capital/tezpay/refs/heads/main/DO_NOT_PAY
+	// - content of the file does not matter, the file just needs to exist to trigger the kill switch
+	resp, err := client.Get(killSwitchDoNotPayURL)
 	if err != nil {
-		return err
+		return ctx, fmt.Errorf("kill switch check failed: could not fetch DO_NOT_PAY: %w", err)
 	}
-	receipt, err := ctx.GetCollector().Simulate(op, ctx.PayoutKey)
-	if err != nil || (receipt != nil && !receipt.IsSuccess()) {
-		if receipt != nil && receipt.Error() != nil && (err == nil || receipt.Error().Error() != err.Error()) {
-			return errors.Join(receipt.Error(), err)
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		return ctx, errors.New(KILL_SWITCH_DETECTED_MESSAGE)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		return ctx, fmt.Errorf("kill switch check failed: failed to determine DO_NOT_PAY status (status: %d)", resp.StatusCode)
+	}
+
+	// 2. UPGRADE_REQUIRED
+	// - https://raw.githubusercontent.com/tez-capital/tezpay/refs/heads/main/UPGRADE_REQUIRED
+	// - the version will be the raw content of the file and is supposed to be compared against constants.VERSION
+	resp, err = client.Get(killSwitchUpgradeRequiredURL)
+	if err != nil {
+		return ctx, fmt.Errorf("kill switch check failed: could not fetch UPGRADE_REQUIRED: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return ctx, fmt.Errorf("kill switch check failed: found UPGRADE_REQUIRED but failed to read body: %w", err)
 		}
-		return err
+
+		requiredVersionStr := strings.TrimSpace(string(body))
+		if requiredVersionStr == "" {
+			return ctx, errors.New(KILL_SWITCH_DETECTED_MESSAGE)
+		}
+
+		if constants.VERSION == "dev" {
+			return ctx, nil
+		}
+
+		currentVersion, err := version.NewVersion(constants.VERSION)
+		if err != nil {
+			return ctx, fmt.Errorf("kill switch check failed: invalid current version format '%s': %w", constants.VERSION, err)
+		}
+
+		requiredVersion, err := version.NewVersion(requiredVersionStr)
+		if err != nil {
+			return ctx, fmt.Errorf("kill switch check failed: found UPGRADE_REQUIRED but failed to parse version '%s': %w", requiredVersionStr, err)
+		}
+
+		if currentVersion.LessThan(requiredVersion) {
+			return ctx, fmt.Errorf("kill switch activated: upgrade required (current: %s, required: %s)", constants.VERSION, requiredVersionStr)
+		}
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		return ctx, fmt.Errorf("kill switch check failed: failed to determine UPGRADE_REQUIRED status (status: %d)", resp.StatusCode)
 	}
 
-	costs := receipt.Op.Costs()
-	if len(costs) < 2 {
-		utils.PanicWithMetadata("partial estimate", "171037723382b8e880b029bbd881016eb6362a96a13e91e8f25ea9223d02fa31", costs)
-	}
-
-	ctx.StageData.BatchMetadataDeserializationGasLimit = costs[0].GasUsed - costs[len(costs)-1].GasUsed
-
-	if ctx.StageData.BatchMetadataDeserializationGasLimit < 0 {
-		utils.PanicWithMetadata("unexpected deserialization limit", "171037723382b8e880b029bbd881016eb6362a96a13e91e8f25ea9223d02fa32", ctx.StageData.BatchMetadataDeserializationGasLimit)
-	}
-	return nil
+	return ctx, nil
 }
 
 func CheckConditionsAndPrepare(ctx *PayoutGenerationContext, options *common.GeneratePayoutsOptions) (*PayoutGenerationContext, error) {
+	ctx, err := checkKillSwitch(ctx, options)
+	if err != nil {
+		return ctx, err
+	}
+
 	collector := ctx.GetCollector()
 	logger := ctx.logger.With("phase", "check_conditions_and_prepare")
 	logger.Info("checking conditions and preparing")
@@ -47,12 +115,6 @@ func CheckConditionsAndPrepare(ctx *PayoutGenerationContext, options *common.Gen
 	}
 	if !revealed {
 		return ctx, errors.Join(constants.ErrNotRevealed, fmt.Errorf("address - %s", payoutAddress))
-	}
-
-	logger.Debug("estimating serialization gas limit")
-	err = estimateBatchSerializationGasLimit(ctx)
-	if err != nil {
-		return ctx, errors.Join(constants.ErrFailedToEstimateSerializationGasLimit, err)
 	}
 
 	return ctx, nil

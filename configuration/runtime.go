@@ -85,6 +85,7 @@ type RuntimeConfiguration struct {
 	SourceBytes                []byte `json:"-"`
 	DisableAnalytics           bool   `json:"disable_analytics,omitempty"`
 	GCPSigner                  string
+	DisableKillSwitch          bool   `json:"disable_kill_switch,omitempty"`
 }
 
 func GetDefaultRuntimeConfiguration() RuntimeConfiguration {

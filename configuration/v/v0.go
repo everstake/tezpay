@@ -88,6 +88,7 @@ type ConfigurationV0 struct {
 	SourceBytes                []byte                        `json:"-"`
 	DisableAnalytics           bool                          `json:"disable_analytics,omitempty" comment:"disables analytics, please consider leaving it enabled🙏"`
 	GCPSigner                  string                        `json:"gcp_signer" comment:"GCP KMS key source"`
+	DisableKillSwitch          bool                          `json:"disable_kill_switch,omitempty" comment:"disables kill switch, please consider leaving it enabled🙏"`
 }
 
 type NotificatorConfigurationBase struct {
