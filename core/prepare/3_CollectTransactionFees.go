@@ -1,7 +1,9 @@
 package prepare
 
 import (
-	"log/slog"
+	"fmt"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/samber/lo"
 	"github.com/tez-capital/tezpay/common"
@@ -9,6 +11,36 @@ import (
 	"github.com/tez-capital/tezpay/core/estimate"
 	"github.com/tez-capital/tezpay/utils"
 )
+
+const (
+	maxEstimateErrorLengthInAdminNotification = 150
+	// keeps the message within the smallest common notificator limit (discord - 2000 chars)
+	maxEstimateFailuresAdminNotificationLength = 1900
+)
+
+func truncateRunes(s string, limit int) string {
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	return string(runes[:limit]) + "..."
+}
+
+func formatEstimateFailuresAdminNotification(cycles []int64, failures []estimate.EstimateResult[*common.AccumulatedPayoutRecipe]) string {
+	msg := fmt.Sprintf("⚠️ Failed to estimate tx costs for %d payout(s) in %s - they were excluded from this payout run (%s):", len(failures), utils.FormatCycleNumbers(cycles...), enums.INVALID_FAILED_TO_ESTIMATE_TX_COSTS)
+	for i, failure := range failures {
+		tx := failure.Transaction
+		errMsg := truncateRunes(strings.ReplaceAll(failure.Error.Error(), "\n", "; "), maxEstimateErrorLengthInAdminNotification)
+		line := fmt.Sprintf("\n- delegator %s -> recipient %s, %s %s: %s", tx.Delegator, tx.Recipient, common.MutezToTezS(tx.GetAmount().Int64()), tx.TxKind, errMsg)
+		// reserve space for the "and N more" suffix
+		if utf8.RuneCountInString(msg)+utf8.RuneCountInString(line)+40 > maxEstimateFailuresAdminNotificationLength {
+			msg += fmt.Sprintf("\n... and %d more (see logs)", len(failures)-i)
+			break
+		}
+		msg += line
+	}
+	return msg
+}
 
 func CollectTransactionFees(ctx *PayoutPrepareContext, options *common.PreparePayoutsOptions) (result *PayoutPrepareContext, err error) {
 	logger := ctx.logger.With("phase", "collect_transaction_fees")
@@ -23,9 +55,11 @@ func CollectTransactionFees(ctx *PayoutPrepareContext, options *common.PreparePa
 
 	validAccumulatedRecipes := utils.OnlyValidAccumulatedPayouts(ctx.StageData.AccumulatedPayouts)
 	// get new estimates
+	estimateFailures := make([]estimate.EstimateResult[*common.AccumulatedPayoutRecipe], 0)
 	recipesWithEstimate := lo.Map(estimate.EstimateTransactionFees(validAccumulatedRecipes, estimateContext), func(result estimate.EstimateResult[*common.AccumulatedPayoutRecipe], _ int) *common.AccumulatedPayoutRecipe {
 		if result.Error != nil {
-			slog.Warn("failed to estimate tx costs", "recipient", result.Transaction.Recipient, "delegator", ctx.PayoutKey.Address(), "amount", result.Transaction.GetAmount().Int64(), "kind", result.Transaction.TxKind, "error", result.Error)
+			logger.Warn("failed to estimate tx costs", "recipient", result.Transaction.Recipient, "delegator", result.Transaction.Delegator, "payout_address", ctx.PayoutKey.Address(), "amount", result.Transaction.GetAmount().Int64(), "kind", result.Transaction.TxKind, "error", result.Error)
+			estimateFailures = append(estimateFailures, result)
 			result.Transaction.IsValid = false
 			result.Transaction.Note = string(enums.INVALID_FAILED_TO_ESTIMATE_TX_COSTS)
 			return result.Transaction
@@ -65,6 +99,11 @@ func CollectTransactionFees(ctx *PayoutPrepareContext, options *common.PreparePa
 		utils.AssertZAmountPositiveOrZero(recipe.GetAmount())
 		return recipe
 	})
+
+	if len(estimateFailures) > 0 {
+		cycles := lo.Uniq(lo.Map(ctx.PayoutBlueprints, func(blueprint *common.CyclePayoutBlueprint, _ int) int64 { return blueprint.Cycle }))
+		ctx.AdminNotify(formatEstimateFailuresAdminNotification(cycles, estimateFailures))
+	}
 
 	ctx.StageData.AccumulatedPayouts = utils.OnlyValidAccumulatedPayouts(recipesWithEstimate) // overwrite with new only valid ones
 

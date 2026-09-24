@@ -25,6 +25,8 @@ var (
 	lastProcessedCycle    int64
 	cycleToProcess        int64
 	endCycle              int64
+	// last cycle for which admin was notified about processing failure, to avoid spamming on every retry
+	lastRetryNotifiedCycle int64 = -1
 )
 
 type protocolChangeDecision struct {
@@ -65,8 +67,13 @@ func evaluateProtocolChange(expectedProtocol, currentProtocol tezos.ProtocolHash
 
 func processCycleInContinualMode(context *configurationAndEngines, forceConfirmationPrompt bool, mixInContractCalls bool, mixInFATransfers bool, isDryRun bool, silent bool, payoutInterval, intervalTriggerOffset, includePrevious int64) (processed bool) {
 	processed = true
-	retry := func() bool {
+	config, collector, signer, transactor := context.Unwrap()
+	retry := func(reason string) bool {
 		processed = false
+		if lastRetryNotifiedCycle != cycleToProcess {
+			notifyAdmin(config, fmt.Sprintf("⚠️ Cycle #%d processing failed, retrying every 5 minutes: %s", cycleToProcess, reason))
+			lastRetryNotifiedCycle = cycleToProcess
+		}
 		return false
 	}
 
@@ -95,7 +102,6 @@ func processCycleInContinualMode(context *configurationAndEngines, forceConfirma
 		}
 	}()
 
-	config, collector, signer, transactor := context.Unwrap()
 	fsReporter := reporter_engines.NewFileSystemReporter(config, &common.ReporterEngineOptions{
 		DryRun: isDryRun,
 	})
@@ -103,14 +109,14 @@ func processCycleInContinualMode(context *configurationAndEngines, forceConfirma
 	// refresh engine params - for protocol upgrades
 	if err := errors.Join(transactor.RefreshParams(), collector.RefreshParams()); err != nil {
 		slog.Error("failed to check for protocol changes", "error", err.Error())
-		return retry()
+		return retry("failed to refresh engine params: " + err.Error())
 	}
 
 	slog.Info("acquiring lock", "cycles", cycles, "phase", "acquiring_lock")
 	unlock, err := lockCyclesWithTimeout(time.Minute*10, cycles...)
 	if err != nil {
 		slog.Error("failed to acquire lock", "error", err.Error())
-		return retry()
+		return retry("failed to acquire lock: " + err.Error())
 	}
 	defer unlock()
 
@@ -124,16 +130,17 @@ func processCycleInContinualMode(context *configurationAndEngines, forceConfirma
 			return
 		}
 		slog.Error("failed to generate payouts", "error", err.Error())
-		return retry()
+		return retry("failed to generate payouts: " + err.Error())
 	}
 
 	slog.Info("checking reports of past payouts")
-	preparationResult := assertRunWithResult(func() (*common.PreparePayoutsResult, error) {
-		return core.PreparePayouts(generationResult, config, common.NewPreparePayoutsEngineContext(collector, signer, fsReporter, notifyAdminFactory(config)), &common.PreparePayoutsOptions{
-			WaitForSufficientBalance: true,
-			Accumulate:               true,
-		})
-	}, EXIT_OPERTION_FAILED)
+	preparationResult, err := core.PreparePayouts(generationResult, config, common.NewPreparePayoutsEngineContext(collector, signer, fsReporter, notifyAdminFactory(config)), &common.PreparePayoutsOptions{
+		WaitForSufficientBalance: true,
+		Accumulate:               true,
+	})
+	if err != nil {
+		exitWithAdminNotification(config, EXIT_OPERTION_FAILED, fmt.Sprintf("failed to prepare payouts for cycle #%d", cycleToProcess), err)
+	}
 
 	if len(preparationResult.ValidPayouts) == 0 {
 		slog.Info("nothing to pay out, skipping")
@@ -152,13 +159,14 @@ func processCycleInContinualMode(context *configurationAndEngines, forceConfirma
 	}
 
 	slog.Info("executing payouts", "valid", len(preparationResult.ValidPayouts), "invalid", len(preparationResult.InvalidPayouts), "accumulated", len(preparationResult.ValidPayouts), "already_successful", len(preparationResult.ReportsOfPastSuccessfulPayouts))
-	executionResult := assertRunWithResult(func() (*common.ExecutePayoutsResult, error) {
-		return core.ExecutePayouts(preparationResult, config, common.NewExecutePayoutsEngineContext(signer, transactor, fsReporter, notifyAdminFactory(config)), &common.ExecutePayoutsOptions{
-			MixInContractCalls: mixInContractCalls,
-			MixInFATransfers:   mixInFATransfers,
-			DryRun:             isDryRun,
-		})
-	}, EXIT_OPERTION_FAILED)
+	executionResult, err := core.ExecutePayouts(preparationResult, config, common.NewExecutePayoutsEngineContext(signer, transactor, fsReporter, notifyAdminFactory(config)), &common.ExecutePayoutsOptions{
+		MixInContractCalls: mixInContractCalls,
+		MixInFATransfers:   mixInFATransfers,
+		DryRun:             isDryRun,
+	})
+	if err != nil {
+		exitWithAdminNotification(config, EXIT_OPERTION_FAILED, fmt.Sprintf("failed to execute payouts for cycle #%d", cycleToProcess), err)
+	}
 
 	// notify
 	failedCount := lo.CountBy(executionResult.BatchResults, func(br *common.BatchResult) bool { return !br.IsSuccess })
