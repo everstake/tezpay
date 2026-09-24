@@ -66,6 +66,7 @@ func checkBalanceWithCollector(data *CheckBalanceHookData, ctx *PayoutPrepareCon
 
 func runBalanceCheck(ctx *PayoutPrepareContext, logger *slog.Logger, check func(*CheckBalanceHookData) error, data *CheckBalanceHookData, options *common.PreparePayoutsOptions) error {
 	notificatorTrigger := 0
+	checkFailureNotificatorTrigger := 0
 	for {
 		// we reset values before each check so we get relevant data for this check only
 		data.IsSufficient = true
@@ -74,7 +75,11 @@ func runBalanceCheck(ctx *PayoutPrepareContext, logger *slog.Logger, check func(
 		if err := check(data); err != nil {
 			if options.WaitForSufficientBalance {
 				logger.Error("failed to check balance, retrying in 5 minutes", "error", err.Error(), "phase", "wait_for_sufficient_balance")
+				if checkFailureNotificatorTrigger%12 == 0 { // every hour
+					ctx.AdminNotify(fmt.Sprintf("failed to check balance, retrying - %s", err.Error()))
+				}
 				time.Sleep(time.Minute * 5)
+				checkFailureNotificatorTrigger++
 				continue
 			}
 			return errors.Join(constants.ErrFailedToCheckBalance, err)

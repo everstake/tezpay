@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/tez-capital/tezpay/common"
 	"github.com/tez-capital/tezpay/configuration"
@@ -82,4 +84,11 @@ func notifyAdminFactory(configuration *configuration.RuntimeConfiguration) func(
 	return func(msg string) {
 		notifyAdmin(configuration, msg)
 	}
+}
+
+// exitWithAdminNotification notifies admin before exiting - os.Exit skips deferred notifications
+func exitWithAdminNotification(configuration *configuration.RuntimeConfiguration, exitCode int, msg string, err error) {
+	slog.Error(msg, "error", err.Error())
+	notifyAdmin(configuration, fmt.Sprintf("🚨 %s, tezpay exited (code %d): %s", msg, exitCode, err.Error()))
+	os.Exit(exitCode)
 }
