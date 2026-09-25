@@ -99,6 +99,7 @@ func executePayouts(ctx *PayoutExecutionContext, options *common.ExecutePayoutsO
 	successfulPayoutReports := append(batchesResults.ToIndividualReports(), ctx.StageData.ReportsOfPastSuccesfulPayouts...)
 	if err := reporter.ReportPayouts(successfulPayoutReports); err != nil {
 		logger.Warn("!!! failed to report sent payouts !!!", "error", err.Error())
+		ctx.AdminNotify(fmt.Sprintf("🚨 Failed to write report of sent payouts - check reports before next run to avoid double payouts: %s", err.Error()))
 		failureDetected = true
 	}
 	ctx.StageData.BatchResults = batchesResults
@@ -109,6 +110,7 @@ func executePayouts(ctx *PayoutExecutionContext, options *common.ExecutePayoutsO
 
 	if err := reporter.ReportInvalidPayouts(invalidReports); err != nil {
 		logger.Warn("failed to report invalid payouts", "error", err.Error())
+		ctx.AdminNotify(fmt.Sprintf("⚠️ Failed to write report of invalid payouts: %s", err.Error()))
 		failureDetected = true
 	}
 
@@ -116,6 +118,7 @@ func executePayouts(ctx *PayoutExecutionContext, options *common.ExecutePayoutsO
 	for cycle, cycleSummary := range summary.CycleSummaries {
 		if err := reporter.ReportCycleSummary(cycle, cycleSummary); err != nil {
 			logger.Warn("failed to report cycle summary", "error", err.Error())
+			ctx.AdminNotify(fmt.Sprintf("⚠️ Failed to write cycle #%d summary report: %s", cycle, err.Error()))
 			failureDetected = true
 		}
 	}

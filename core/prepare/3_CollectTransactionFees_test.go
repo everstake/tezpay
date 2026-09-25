@@ -3,13 +3,16 @@ package prepare
 import (
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/tez-capital/tezpay/common"
 	"github.com/tez-capital/tezpay/configuration"
 	"github.com/tez-capital/tezpay/constants"
 	"github.com/tez-capital/tezpay/constants/enums"
+	"github.com/tez-capital/tezpay/core/estimate"
 	"github.com/tez-capital/tezpay/test/mock"
 	"github.com/trilitech/tzgo/tezos"
 )
@@ -233,4 +236,63 @@ func TestCollectTransactionFees(t *testing.T) {
 		_, err := CollectTransactionFees(ctx, &common.PreparePayoutsOptions{})
 		t.Log(err)
 	})
+}
+
+func TestCollectTransactionFeesNotifiesAdminOnEstimateFailure(t *testing.T) {
+	assert := assert.New(t)
+	config := configuration.GetDefaultRuntimeConfiguration()
+	collector := mock.InitSimpleCollector()
+	signer := mock.InitSimpleSigner()
+
+	notifications := []string{}
+	ctx := &PayoutPrepareContext{
+		PreparePayoutsEngineContext: *common.NewPreparePayoutsEngineContext(collector, signer, nil, func(msg string) {
+			notifications = append(notifications, msg)
+		}),
+		StageData:        &StageData{AccumulatedPayouts: getRecipes()},
+		PayoutBlueprints: []*common.CyclePayoutBlueprint{{Cycle: 1000}},
+		configuration:    &config,
+		logger:           slog.Default(),
+	}
+
+	t.Log("no notification on success")
+	collector.SetOpts(&mock.SimpleCollectorOpts{UsedMilliGas: 1000000})
+	_, err := CollectTransactionFees(ctx, &common.PreparePayoutsOptions{})
+	assert.Nil(err)
+	assert.Empty(notifications)
+
+	t.Log("single aggregated notification on failure")
+	recipes := getRecipes()
+	ctx.StageData.AccumulatedPayouts = recipes
+	collector.SetOpts(&mock.SimpleCollectorOpts{
+		UsedMilliGas:  1000000,
+		FailWithError: errors.New("script_rejected"),
+	})
+	result, err := CollectTransactionFees(ctx, &common.PreparePayoutsOptions{})
+	assert.Nil(err)
+	assert.Empty(result.StageData.AccumulatedPayouts)
+	assert.Len(notifications, 1)
+	assert.Contains(notifications[0], "2 payout(s)")
+	assert.Contains(notifications[0], "1000")
+	assert.Contains(notifications[0], "script_rejected")
+	for _, recipe := range recipes {
+		assert.Contains(notifications[0], recipe.Delegator.String())
+		assert.Contains(notifications[0], recipe.Recipient.String())
+	}
+}
+
+func TestFormatEstimateFailuresAdminNotificationIsCapped(t *testing.T) {
+	assert := assert.New(t)
+	failures := make([]estimate.EstimateResult[*common.AccumulatedPayoutRecipe], 0)
+	for i := 0; i < 50; i++ {
+		failures = append(failures, estimate.EstimateResult[*common.AccumulatedPayoutRecipe]{
+			Transaction: getRecipes()[0],
+			Error:       errors.New(strings.Repeat("ž", maxEstimateErrorLengthInAdminNotification*2)),
+		})
+	}
+	msg := formatEstimateFailuresAdminNotification([]int64{1000}, failures)
+	assert.LessOrEqual(utf8.RuneCountInString(msg), maxEstimateFailuresAdminNotificationLength)
+	assert.True(utf8.ValidString(msg))
+	assert.Contains(msg, "more (see logs)")
+	assert.NotContains(msg, strings.Repeat("ž", maxEstimateErrorLengthInAdminNotification+1))
 }
