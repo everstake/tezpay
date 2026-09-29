@@ -40,10 +40,14 @@ func executeBatch(ctx *PayoutExecutionContext, logger *slog.Logger, batchId stri
 		return opExecCtx.AsFailedBatchResult(errors.Join(constants.ErrOperationBroadcastFailed, err))
 	}
 
-	logger.Info("waiting for confirmation", "op_reference", utils.GetOpReference(opExecCtx.GetOpHash(), ctx.GetConfiguration().Network.Explorer), "op_hash", opExecCtx.GetOpHash(), "phase", "batch_waiting_for_confirmation")
+	opReference := utils.GetOpReference(opExecCtx.GetOpHash(), ctx.GetConfiguration().Network.Explorer)
+	logger.Info("waiting for confirmation", "op_reference", opReference, "op_hash", opExecCtx.GetOpHash(), "phase", "batch_waiting_for_confirmation")
+	cycles := lo.Uniq(lo.Map(ctx.PayoutBlueprints, func(blueprint *common.CyclePayoutBlueprint, _ int) int64 { return blueprint.Cycle }))
+	stopConfirmationWatch := watchBatchConfirmation(ctx.AdminNotify, fmt.Sprintf("%s (%s)", batchId, utils.FormatCycleNumbers(cycles...)), opReference)
 	ctx.protectedSection.Pause() // pause protected section to allow confirmation canceling
 	err = opExecCtx.WaitForApply()
 	ctx.protectedSection.Resume() // resume protected section
+	stopConfirmationWatch(err)
 	if err != nil {
 		logger.Warn("failed to apply batch", "error", err.Error(), "phase", "batch_execution_finished")
 		return opExecCtx.AsFailedBatchResult(errors.Join(constants.ErrOperationConfirmationFailed, err))
